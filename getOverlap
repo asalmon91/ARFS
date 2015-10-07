@@ -1,0 +1,17 @@
+function [ overlap ] = getOverlap( rf, cc, dim )
+%getOverlap calculates the predicted percent overlap between ref. frame
+%and opposing cluster composite images
+%   rf and cc must be of the form [x y], and dim must be [height width]
+
+dx = abs(rf(1) - cc(1));
+dy = abs(rf(2) - cc(2));
+xOL = dim(2) - dx;
+yOL = dim(1) - dy;
+if xOL < 0 || yOL < 0
+    overlap = 0;
+else
+    overlap = (xOL*yOL)/(prod(dim));
+end
+
+end
+
