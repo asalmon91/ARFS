@@ -1,0 +1,292 @@
+%% This version is designed to be used on whole directories
+
+%                     .,,`
+%        ###         ,;;;;:;`     +#     ##########
+%       `###        :;;:;:;;:.    +#     ##``````:##
+%       ## #+      .;;:':+;;;;    +#     ##       .#`
+%       #; ##      :;::++':':::   +#     ##       `#`
+%      ##  `#+     :'+''''':;;;   +#     ##       ##
+%      #+   ##    `:::+++++''::   +#     ##########'
+%     '#    .#'    ;:''++++''::   +#     ##++++++;
+%     #########    ;;+;+;;';::,   +#     ##
+%    ,#++++++##;   ,;::;;:;;::`   +#     ##
+%    ##       ##    ;;;;::::;.    +#     ##
+%   `#.       ,#:    ::;:;:;.     +#     ##
+%   ##`       .##`    `,,,,       ##:   `##`
+%
+% ARFS 2015, Alex Salmon, Medical College of Wisconsin, Eye Institute,
+% Advanced Ocular Imaging Program
+
+clear all; close all; clc; %#ok<*CLSCR>
+
+%% Get Parameters
+packet = arfsInput();
+if isempty(packet)
+    clear packet;
+    return;
+end
+videoFiles  = packet.vid;
+slash       = packet.slash;
+single      = packet.single;
+nFiles      = packet.nFiles;
+mod         = packet.mod;
+ss          = packet.ss;
+nFramesReq  = packet.nReq;
+display     = packet.display;
+mtskip      = packet.mtskip;
+outputFile  = packet.outFile;
+path        = packet.path;
+
+if exist(outputFile,'file') == 2
+    fname = strsplit(outputFile,slash);
+    fname = fname{end};
+    msg = horzcat('Please ensure ',fname,' is closed before proceeding');
+    msgbox(msg,'Output File Closed?');
+end
+
+avi = length('.avi');
+nSteps = 7;
+
+weightINT = 0.2;
+weightNCC = 0.4;
+weightP2C = 0.1;
+weightIFM = 0.3;
+if mtskip
+    bal = (weightP2C/3);
+    weightINT = weightINT + bal;
+    weightIFM = weightIFM + bal; 
+    weightNCC = weightNCC + bal;
+    weightP2C = 0;
+    nSteps = nSteps - 1; % Skips clustering
+end
+nccFr     = 1.0; % fraction of the sample image used in ncc's
+wtLbls = {'weightINT', 'weightNCC', 'weightP2C', 'weightIFM'};
+wts = [weightINT, weightNCC, weightP2C, weightIFM];
+
+%% BEGIN LOOPING THROUGH VIDEOS
+for z=1:nFiles
+    step = 0;
+    vid.mtskip = mtskip;
+    try
+        tic
+        if single
+            video = VideoReader(videoFiles.name); %#ok<TNMLP>
+        else
+            video = VideoReader(videoFiles(z).name);  %#ok<TNMLP>
+        end
+        fprintf('Working on video: %s\n', videoFiles(z).name);
+        
+        %% STEP 1: EXTRACTING VIDEO AND GETTING FOV
+        step = step+1;
+        fprintf('Step %i/%i - ', step, nSteps);
+        fprintf('Warming up...\n');
+        
+        if mtskip
+            videoFiles(z).skipMotionTracking = 'true';
+        else
+            videoFiles(z).skipMotionTracking = 'false';
+        end
+        nFrames = video.NumberOfFrames;
+        vid.frames = (1:nFrames)';
+        vid.scores.prelim = zeros(nFrames,1);
+        mov = cell(nFrames,1);
+        images = cell(nFrames,1);
+        for i=1:nFrames
+            mov{i} = read(video,i);
+            images{i} = im2double(mov{i});
+        end
+        clear mov;
+        [imgHeight,imgWidth] = size(images{1});
+%         if ~mtskip
+        [ht, wd]     = cropFrame(images{1}, nccFr);
+        [yFOV, xFOV, blinkThr] = ...
+            findFovAndBlink(path, slash, videoFiles(z).name);
+        pixPerDegY   = imgHeight/yFOV;
+        pixPerDegX   = imgWidth/xFOV;
+        % Degrees Per Second (dps)
+        dps = 15; % (Ditchburn and Ginsborg, J Physiol,1953)
+        maxEyeMoveY = dps*pixPerDegY/video.frameRate; % to pix/frame
+        maxEyeMoveX = dps*pixPerDegX/video.frameRate;
+        if maxEyeMoveY > 2*imgHeight/3 || maxEyeMoveX > 2*imgWidth/3
+            maxEyeMoveY= 2*imgHeight/3;   maxEyeMoveX = 2*imgWidth/3;
+        end
+        cropParams.memY = round(maxEyeMoveY);
+        cropParams.memX = round(maxEyeMoveX);
+        cropParams.ht = ht;
+        cropParams.wd = wd;
+        fprintf('horizontal FOV is %4.2f degrees\n',xFOV);
+        fprintf('vertical FOV is %4.2f degrees\n',yFOV);
+%         end
+        
+        %% STEP 2: INTENSITY-BASED SCORING
+        step = step+1;
+        fprintf('Step %i/%i - ', step, nSteps);
+        fprintf('Scoring frames on intensity distributions...\n');
+        
+        vid = getInt(images, vid, blinkThr);
+        vid = prelimScore('INT',wts,vid);
+        
+        t = toc;
+        timeElapsed(t);
+        
+        %% STEP 3: INTRA-FRAME MOTION-BASED SCORING
+        step = step+1;
+        fprintf('Step %i/%i - ', step, nSteps);
+        fprintf('Detecting frames containing motion...\n');
+        
+        vid = ifm(vid,images,ss);
+        vid = prelimScore('IFM',wts,vid);        
+        
+        t = toc;
+        timeElapsed(t);
+        
+        %% STEP 4: TRACK MOTION
+        step = step+1;
+        fprintf('Step %i/%i - ', step, nSteps);
+        if ~mtskip % Do full motion tracking
+            fprintf('Tracking eye motion...\n');
+            
+            vid = MT_noThr(images, vid, cropParams);
+
+        else % Just get average NCC coefficient for each frame
+            fprintf('Getting NCC coefficients...\n');
+            
+            vid = getANCC(images, vid, cropParams);
+            
+        end
+        
+        t = toc;
+        timeElapsed(t);
+        vid = prelimScore('NCC', wts, vid);
+        
+        %% STEP 5: CLUSTER ANALYSIS OF FIXATIONS
+        if ~mtskip
+            step = step+1;
+            fprintf('Step %i/%i - ', step, nSteps);
+            fprintf('Clustering...\n');
+
+            vid = findClusters(images, vid);
+            vid.scores.p2c = getP2C(vid);
+
+            vid = prelimScore('P2C',wts,vid);
+        end
+        
+        %% STEP 6: SORTING/REPORTING
+        step = step+1;
+        fprintf('Step %i/%i - ', step, nSteps);
+        fprintf('Sorting...\n');
+        vid.finalScores = vid.scores.prelim;
+        if ~mtskip
+            vid.xDeg = vid.x./pixPerDegX;
+            vid.yDeg = vid.y./pixPerDegY;
+        end
+        
+        sortedData = vid;
+        [sortedData.finalScores, I] = sort(vid.finalScores, 'descend');
+        sortedData.frames  = sortedData.frames(I);
+        sortedData.scores.int = sortedData.scores.int(I);
+        sortedData.scores.sumSlopes = sortedData.scores.sumSlopes(I);
+%         sortedData.scores.maxSlopes = sortedData.scores.maxSlopes(I);
+        sortedData.scores.prelim    = sortedData.scores.prelim(I);
+        sortedData.scores.ncc       = sortedData.scores.ncc(I);
+        if ~mtskip
+            sortedData.x       = sortedData.x(I);
+            sortedData.y       = sortedData.y(I);
+            sortedData.xDeg    = sortedData.xDeg(I);
+            sortedData.yDeg    = sortedData.yDeg(I);
+            sortedData.scores.p2c = sortedData.scores.p2c(I);
+            sortedData.clusters.assign  = sortedData.clusters.assign(I);
+        end
+        % Don't need to sort sizes, cNames, or centroids
+        
+        dim = [imgHeight, imgWidth];
+        nrf = numel(sortedData.frames);
+        if nFramesReq == 0 || nFramesReq > nrf
+            nFramesReq = nrf;
+        end
+            
+        name = videoFiles(z).name;
+        videoFiles(z).sorted = ...
+            rfReport(name, sortedData, dim, wts, images, nFramesReq, display);
+        videoFiles(z).vid = vid;
+        
+        t = toc;
+        timeElapsed(t);
+                
+        %% STEP 7: WRITING
+        step = step+1;
+        fprintf('Step %i/%i - ', step, nSteps);
+        fprintf('Saving Progress...\n');
+        fprintf('writing %s...\n', outputFile);
+        
+        % Excel setup
+        Name = cell(nFramesReq,1);
+        nameParts = strsplit(videoFiles(z).name, '_');
+        ext = nameParts{end}(1:end-avi);
+        sub = nameParts{1};
+        modality = nameParts{end-1};
+        sheetName = horzcat(sub,' ',modality,' ',ext);
+        %% Table setup
+        Name{1} = name;
+        Frames  = videoFiles(z).sorted.frames(1:nFramesReq);
+        
+        if ~mtskip
+            numClusters = cell(nFramesReq,1);
+            numClusters{1}  = numel(videoFiles(z).sorted.clusters.names);
+            Cluster         = videoFiles(z).sorted.clusters.assign(1:nFramesReq);
+            X_Position_pix  = videoFiles(z).sorted.x(1:nFramesReq);
+            Y_Position_pix  = videoFiles(z).sorted.y(1:nFramesReq);
+            X_Position_deg  = videoFiles(z).sorted.xDeg(1:nFramesReq);
+            Y_Position_deg  = videoFiles(z).sorted.yDeg(1:nFramesReq);
+            Pr_OL_w_cluster = videoFiles(z).sorted.clusters.PrOL;
+
+            T = table(Name, Frames, Cluster, numClusters, X_Position_pix, ...
+                Y_Position_pix, X_Position_deg, Y_Position_deg, ...
+                Pr_OL_w_cluster);
+        else
+            T = table(Name, Frames);
+        end
+        writetable(T, outputFile, 'Sheet', sheetName);
+        fprintf('%s written\n\n', outputFile);
+
+    %% Error Handling
+    catch MException
+        fprintf('\nI''m sorry I failed you: %s\n', videoFiles(z).name);
+        fprintf(MException.message);
+        fprintf('\n');
+        videoFiles(z).error = MException;
+        videoFiles(z).vid   = vid;
+    end
+end
+
+try
+    if single
+        varSave = strsplit(videoFiles.name,'.');
+        varSave = varSave{1};
+        varSave = strcat(path, slash, varSave,'_rf_data.mat');
+        save(varSave,'videoFiles');
+    else
+        varSave = strsplit(outputFile,'.');
+        varSave = varSave{1};
+        varSave = horzcat(varSave,'_rf_data.mat');
+        save(varSave,'videoFiles');
+    end
+catch
+end
+
+if any(strcmp('error',fieldnames(videoFiles)))
+    fprintf('\nPlease send the following error messages to asalmon@mcw.edu\n\n');
+    for i=1:nFiles
+        if ~isempty(videoFiles(i).error)
+            fprintf('%i\n',i);
+            fprintf(horzcat(videoFiles(i).name,'\n'));
+            fprintf(horzcat(videoFiles(i).error.message,'\n'));
+            fprintf('%s\n', videoFiles(i).error.stack.name);
+            fprintf('Line:\n');
+            fprintf('%i\n', videoFiles(i).error.stack.line);
+            fprintf('\n\n');
+        end
+    end
+end
+% THE END
+%-------------------------------------------------------------------------------
