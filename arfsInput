@@ -10,7 +10,7 @@ prompt = {
     'Enter path',...
     'Enter video name (avi''s only please) or leave blank to process whole directory',...
     'Enter output file name, if left blank it will be named after the path',...
-    'Primary modality: (leave blank to process all)',...
+    'Modalities (separate with commas)',...
     'Type on or off to toggle display',...
     'Strip size for distortion detection',...
     'Number of frames to output'...
@@ -18,7 +18,7 @@ prompt = {
     };
 dlg_title = 'ARFS 2015';
 num_lines = 1;
-defaults  = {'','','','all','off','20','10','no'};
+defaults  = {'','','','confocal, split','off','20','10','no'};
 
 if ispc
     slash = '\';
@@ -79,73 +79,100 @@ while inputInvalid
     end
 
     %% PRIMARY SEQUENCE CONTROL
-    primInd = 4;
-    prim = response{primInd};
-    acceptMod = {'CONFOCAL', 'DIRECT', 'REFLECT', 'AVG', 'SPLIT',...
-        'SPLIT_DET', 'SPLIT DETECTOR', 'ALL'};
-    splits = {'SPLIT', 'SPLIT_DET', 'SPLIT DETECTOR'};
-    if isempty(prim)
-        mod = 'ALL';
-        defaults{primInd} = mod;
-    elseif any(strcmpi(prim,acceptMod))
-        if any(strcmpi(prim,splits))
-            mod = 'SPLIT';
+    if isempty(response{2})
+        primInd = 4;
+        prim = response{primInd};
+        prim = strtrim(strsplit(prim,','));
+        acceptMod = {'CONFOCAL', 'DIRECT', 'REFLECT', 'AVG', 'SPLIT',...
+            'SPLIT_DET', 'SPLIT DETECTOR', 'ALL'};
+        splits = {'SPLIT', 'SPLIT_DET', 'SPLIT DETECTOR'};
+
+        if strcmp(prim,'')
+            modality = 'ALL';
+            nMods = 1;
+            defaults{primInd} = modality;
+            invalidMods = false;
         else
-            mod = prim;
+            nMods = numel(prim);
+            modality = cell(1,nMods);
+            invalidMods = false(nMods,1);
+            for i=1:nMods
+                if any(strcmpi(prim(i),acceptMod))
+                    if any(strcmpi(prim(i),splits))
+                        modality{i} = 'SPLIT';
+                    else
+                        modality{i} = prim{i};
+                    end
+                else
+                    invalidMods(i) = true;
+                end
+            end
         end
-        defaults{primInd} = prim;
+        if any(invalidMods)
+            beep;
+            msg = ['When did we start acquiring "',prim{invalidMods},'" sequences?'];
+            h = msgbox(msg,'Error','replace');
+            inputInvalid = true;
+            continue;
+        else
+            defaults{primInd} = strjoin(prim,', ');
+        end
     else
-        beep;
-        msg = ['When did we start acquiring "',prim,'" sequences?'];
-        h = msgbox(msg,'Error','replace');
-        inputInvalid = true;
-        continue;
+        nameParts = strsplit(response{2},'_');
+        presumedModality = nameParts{end-1};
+        if strcmp(presumedModality,'det')
+            presumedModality = nameParts{end-2};
+        end
+        modality = presumedModality;
     end
     
-    %% FILE NAME(S) CONTROL
+    %% GET VIDEOS
     name = response{2};
     if isempty(name)
         single = false;
-        if strcmpi(mod,'ALL')
+        if nMods == 1 && strcmpi(modality,'ALL')
             pathAvi = horzcat(path,slash,'*.avi');
             videoFiles = dir(pathAvi);
         else
-            checkMod = ['*',lower(mod),'*'];
-            pathAvi  = horzcat(path,slash,checkMod);
-            checkExt = dir(pathAvi);
-            if isempty(checkExt)
-                beep;
-                msg = ['Couldn''t find any ',lower(mod),' videos'];
-                msgbox(msg,'Error','replace');
-                inputInvalid = true;
-                continue;
-            else
-                j=0;
-                for i=1:length(checkExt)
-                    parts = strsplit(checkExt(i).name,'.');
-                    if strcmp(parts{end},'avi')
-                        j = j+1;
-                        videoFiles(j) = checkExt(i); 
+            j=0;
+            for i=1:nMods
+                checkMod = ['*',lower(modality{i}),'*'];
+                pathAvi  = horzcat(path,slash,checkMod);
+                checkExt = dir(pathAvi);
+                if isempty(checkExt)
+%                     beep;
+%                     msg = ['Couldn''t find any ',lower(modality{i}),' videos'];
+%                     h = msgbox(msg,'Error','replace');
+                    videoFiles = [];
+%                     inputInvalid = true;
+                    break;
+                else
+                    for k=1:numel(checkExt)
+                        parts = strsplit(checkExt(k).name,'.');
+                        if strcmp(parts{end},'avi')
+                            j = j+1;
+                            videoFiles(j) = checkExt(k); 
+                        end
                     end
                 end
-                if isempty(videoFiles)
-                    beep;
-                    msg = ['Couldn''t find any ',lower(mod),' videos'];
-                    msgbox(msg,'Error','replace');
-                    inputInvalid = true;
-                    continue;
-                end
-                clear checkExt;
             end
         end
-        nFiles = numel(videoFiles);
+        if isempty(videoFiles)
+            beep;
+            msg = ['Couldn''t find any ',lower(modality),' videos'];
+            h = msgbox(msg,'Error','replace');
+            inputInvalid = true;
+            continue;
+        else
+            clear checkExt;
+            nFiles = numel(videoFiles);
+        end
     else
-        single = true;
         avi = 'avi';
         nameParts = strsplit(name,'.');
-        suffix = nameParts{end};
-        if not(strcmp(avi,suffix))
-            name = strcat(name,avi);
+        ext = nameParts{end};
+        if ~(strcmp(avi,ext))
+            name = strcat(name,['.',avi]);
         end
         if exist(name,'file') == 2
             videoFiles.name = name;
@@ -260,7 +287,7 @@ while inputInvalid
         defaults{mtsind} = 'no';
     else
         beep;
-        msg = 'FATAL ERROR!!! Just kidding, MORBID error: skip motion tracking?';
+        msg = 'FATAL ERROR!! Just kidding, MORBID error: skip motion tracking?';
         h = msgbox(msg,'Error','replace');
         inputInvalid = true;
         continue;
@@ -274,7 +301,7 @@ packet.vid     = videoFiles;
 packet.slash   = slash;
 packet.single  = single;
 packet.nFiles  = nFiles;
-packet.mod     = mod;
+packet.mod     = modality;
 packet.ss      = ss;
 packet.nReq    = nFramesReq;
 packet.display = display;
@@ -282,5 +309,6 @@ packet.outFile = outputFile;
 packet.path    = path;
 packet.mtskip  = mtskip;
 
+delete(h)
 end
 
