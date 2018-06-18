@@ -1,0 +1,97 @@
+function [ yFOV,xFOV, blinkThr ] = findFovAndBlink( path,slash,vidName )
+%findFovAndBlink finds an assoc. .mat and extracts the field of view and
+%the blink intensity threshold
+%   
+
+avi = '.avi';
+avi = numel(avi);
+matName = vidName(1:end-avi);
+matName = strcat(path,slash,matName,'.mat');
+% Look for the corresponding .mat file
+if not(exist(matName, 'file') == 2)
+    % try just looking for the number '*0000.mat'
+    matName  = vidName(1:end-avi);
+    matParts = strsplit(matName,'_');
+    vidNum   = matParts{end};
+    ext = strcat(path,slash,'*',vidNum,'.mat');
+    matDir = dir(ext);
+    for i=1:numel(matDir)
+        guessParts = strsplit(matDir(i).name,'_');
+        % e.g., 'JC' '0001' '790nm' 'OD' '0000.mat'
+        nUsefulIdentifiers = 3;
+        for j=1:nUsefulIdentifiers
+            if not(strcmp(matParts{j},guessParts{j}))
+                matchFound = false;
+                break;
+            else
+                matchFound = true;
+            end
+        end
+        if matchFound
+            matName = matDir(i).name;
+            break;
+        end
+    end
+end
+yFOV     = [];
+xFOV     = [];
+blinkThr = 0;
+try
+    m = load(matName);
+
+    % Calculate parameters for normalized cross-correlation cropping
+    yFOV = ...
+        m.optical_scanners_settings.resonant_scanner_amplitude_in_deg;
+    xFOV = ...
+        m.optical_scanners_settings.raster_scanner_amplitude_in_deg;
+    blinkThr = ...
+        m.eye_tracking_settings.discard_blink_mean_pixel_value_threshold/255;
+catch
+    if isempty(yFOV) || isempty(xFOV)
+        beep;
+        fprintf('\nThis is embarrassing, but I couldn''t find the FOV\n')
+        fprintf('(in degrees) for the video: %s\n', vidName);
+        fprintf('Would you happen to know it?\n');
+        fprintf('Type n if you''d like me to skip this video.\n');
+        fprintf('I''ll automatically skip it in one minute.\n');
+        userNotConfident = true;
+        inputInvalid = true;
+        while userNotConfident
+            while inputInvalid
+                msg = 'Enter FOV or n     ';
+                fov = timeinput(60,'n', msg);
+                if strcmp(fov,'n')
+                    inputInvalid = false;
+                    userNotConfident = false;
+                    msgbox('Video skipped! No FOV',vidName);
+                    break;
+                end
+                try
+                    fov = str2double(fov);
+                    if fov > 0
+                        inputInvalid = false;
+                    end
+                catch
+                end
+            end
+            if strcmp(fov,'n')
+                break;
+            end
+            fprintf('You entered %d, is this correct? ', fov);
+            msg = 'Enter y or n     ';
+            usrin = timeinput(60,'y',msg);
+            if strcmp(usrin,'y')
+                yFOV = fov;
+                xFOV = fov;
+                userNotConfident = false;
+            else
+                inputInvalid = true;
+            end
+        end
+    end
+end
+
+fprintf('Found %s\n',matName)
+
+end
+

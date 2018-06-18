@@ -1,0 +1,158 @@
+function [ data ] = ifm( data, images, ss )
+%intraFrameMotion Summary of this function goes here
+%
+%   FFT math originally written by Alf Dubra
+%   Adapted for this project by Alex Salmon
+%   Detailed explanation goes here
+
+% Get the fourier spectrum from an array of doubles.
+
+%% Initialize and preallocate
+
+[nRows, ~] = size(images{1});
+gf     = data.frames;
+nrf    = length(gf);
+nIter  = floor((nRows/(2*ss))) + (mod(nRows,ss) ~= 0); % Don't skip the bottom!
+slopes = zeros(nrf,nIter);
+
+%% Generate filter
+sideLength = 256; % From trial and error, optimizes data and speed
+k = floor(sideLength/4);
+lowPassMask = k:3*k;
+filteredSideLength = numel(lowPassMask);
+
+%% Analyze strips
+for i=1:nrf
+    img = images{gf(i)};
+    for j=0:nIter-1
+        %% Obtain strip
+        if j==nIter-1 && mod(nRows,ss)~=0
+            ub = nRows-ss+1;
+            lb = nRows;
+        else
+            ub = 1+(2*ss*j);
+            lb = ub+ss-1;
+        end
+        bounds = ub:lb;
+        strip = img(bounds,:);
+        %% Obtain FFT
+        stripFFT = ifftshift(fft2(fftshift(strip),sideLength,sideLength));
+        stripSpectra = abs(stripFFT).^2;
+        ssf = stripSpectra(lowPassMask,lowPassMask); % ssf: stripSpectraFiltered
+        ssf(ssf < median(ssf(ssf>0))) = 0;
+
+        %% Find slope of FFT maxima
+        % Inspired by Longitudinal Reflectance Profile (lrp)
+        lrpx = zeros(sideLength,1);
+        lrpy = lrpx;
+        for n=1:filteredSideLength
+            if max(ssf(:,n)) <= 0
+                continue;
+            end
+            [~,y] = max(ssf(:,n));
+            if numel(y) > 1
+                y = mean(y);
+            end
+            lrpx(n) = n;
+            lrpy(n) = y;
+        end
+        lrpx(lrpx==0) = []; % lrpx = flip(lrpx); %this was for display purposes
+        lrpy(lrpy==0) = [];
+        
+        % Get slope
+        if isempty(lrpx) || isempty(lrpy)
+            continue;
+        end
+        results = polyfit(lrpx, lrpy, 1);
+        slope = abs(results(1));
+        slopes(i,j+1) = slope;
+    end
+end
+
+sumSlopes = sum(slopes,2);
+% maxSlopes = max(slopes,[],2);
+
+normSumSlopes = (sumSlopes - mean(sumSlopes))./std(sumSlopes);
+% normMaxSlopes = (maxSlopes - mean(maxSlopes))./std(maxSlopes);
+
+bf = or(normSumSlopes < -3, normSumSlopes > 3);
+% bf2 = or(normMaxSlopes < -3, normMaxSlopes > 3);
+% bf  = any([bf1,bf2],2);
+if any(bf) && ~all(bf)
+    sumSlopes(bf)           = [];
+%     maxSlopes(bf)           = [];
+    data.scores.int(bf)     = [];
+    data.scores.prelim(bf)  = [];
+    data.frames(bf)         = [];
+end
+
+data.scores.sumSlopes = prepScore(sumSlopes,'inv');
+% data.scores.maxSlopes = prepScore(maxSlopes,'inv');
+
+end
+
+%         subplot(212);
+%         figure;
+%         scatter(lrpx,lrpy);
+%         ylim([200 800])
+%         title(['strip: ',num2str(j)]);
+%         YfitLine  = polyval(results, lrpx);
+%         hold on; plot(lrpx,YfitLine,'color','r'); hold off;
+
+% figure; suptitle('worst sum of slopes');
+% [~,sortSumSlopes] = sort(sumSlopes);
+% for i=1:9
+%     subplot(3,3,i);
+%     imshow(images{gf(sortSumSlopes(i))});
+%     title(num2str(gf(sortSumSlopes(i))));
+% end
+% figure; suptitle('best sum of slopes');
+% for i=0:8
+%     subplot(3,3,i+1);
+%     imshow(images{gf(sortSumSlopes(end-i))});
+%     title(num2str(gf(sortSumSlopes(end-i))));
+% end
+% 
+% figure;
+% suptitle('worst max slopes');
+% [~,sortMaxSlopes] = sort(maxSlopes);
+% for i=1:9
+%     subplot(3,3,i);
+%     imshow(images{gf(sortMaxSlopes(i))});
+%     title(num2str(gf(sortMaxSlopes(i))));
+% end
+% figure;
+% suptitle('best max slopes');
+% [~,sortMaxSlopes] = sort(maxSlopes);
+% for i=0:8
+%     subplot(3,3,i+1);
+%     imshow(images{gf(sortMaxSlopes(end-i))});
+%     title(num2str(gf(sortMaxSlopes(end-i))));
+% end
+
+
+% Code Graveyard
+% Lots of motion elimination
+% sumOfSlopes       = sum(slopes,2);
+% meanSumOfSlopes   = mean(sumOfSlopes);
+% sdSumOfSlopes     = std(sumOfSlopes);
+% wholeVidThreshold = meanSumOfSlopes + sdSumOfSlopes;
+% slopes(sumOfSlopes > wholeVidThreshold,:) = [];
+%
+% % Little but distinct motion elimination
+% sdCoeff = 3;
+% singleFrameThreshold = median(slopes(:)) + (sdCoeff * std(slopes(:)));
+% gf = gf(not(any(slopes > singleFrameThreshold, 2)));
+
+% angles = atand(slopes);
+
+%     MPD = floor(median(angles(i,:)) + std(angles(i,:)));
+%     [~,I] = findpeaks(hist(angles(i,:)),'MinPeakDistance',MPD,...
+%         'MinPeakHeight',1);
+%     nModes(i) = numel(I);
+
+% nModes = zeros(nrf,1);
+
+% angles(sumOfSlopes > wholeVidThreshold,:) = [];
+
+

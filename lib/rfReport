@@ -1,0 +1,274 @@
+function [data] = rfReport( name, data, dim, wts, images, nFramesReq, display )
+%rfReport prints to screen results of the reference frame selection
+%   name must be the name of the video being processed
+% 
+%   dim must be of the form [ht, wd] of the original image
+% 
+%   wts = [weightIFD, weightNCC, weightP2C]
+% 
+%   images must be a cell array containing all frames of a video
+% 
+%   if display is on, rfReport generates a 3D plot of the fixations
+%   (x,y,z=time), a stacked area chart which represents the contribution of
+%   each metric to a frame's score, a scatter plot of the fixations colored
+%   by cluster, and a separate video file of an attempted registration.
+
+% Number of Reminaing Frames (nrf)
+nrf = numel(data.frames);
+fprintf('\n ~ REFERENCE FRAME REPORT ~\n\n');
+fprintf(name);
+fprintf('\n');
+
+% Number of Clusters (nc)
+if ~data.mtskip
+    nc  = numel(data.clusters.names);
+    data.clusters.PrOL = cell(nFramesReq,nc);
+end
+
+for i=1:nFramesReq
+    %% Header
+    fprintf('%i.) Frame #%i:\n',i,data.frames(i));
+    %% Score
+    fprintf('\t- Score: %f\n',data.finalScores(i));
+    if ~data.mtskip
+        %% Cluster #
+        fprintf('\t- Belongs to cluster: %i\n', data.clusters.assign(i));
+        %% Determine the % overlap with other clusters
+        if nc > 1
+            % Reference Frame x,y (rfxy)
+            rfxy = [data.x(i), data.y(i)];
+            OLs = ones(nc,2).*-1; % an OL < 0 is impossible
+            for j=1:nc
+                if data.clusters.assign(i) ~= data.clusters.names(j)
+                    otherxy = data.clusters.centroids(j,:);
+                    OLs(j,1) = getOverlap(rfxy, otherxy, dim);
+                    OLs(j,2) = data.clusters.names(j);
+                    data.clusters.PrOL{i,j} = OLs(j,1);
+                end
+            end
+            OLs(OLs(:,1) == -1,:) = [];
+            for j=1:nc-1
+                fprintf('\t- Pr{overlap w/ cluster # %i} = %4.2f\n',...
+                    OLs(j,2),OLs(j,1));
+            end
+        end
+    end
+end
+
+if ~display
+    return;
+end
+figure;
+set(gcf,'name',name,'numbertitle','off');
+if data.mtskip
+    
+    subplot(211);
+    %% STACKED AREA CHART - SCORES
+    nFrames = length(images);
+%     [f,I] = sort(data.frames);
+    f = (1:nFrames)';
+    [snrf,I] = sort(data.frames);
+%     frames = zeros(2*nrf,1);
+    frames = zeros(2*nFrames,1);
+    frames(1:nFrames)     = f;       % roof of data
+    frames(nFrames+1:end) = flip(f); % floor of data
+    weightINT = wts(1);
+    weightNCC = wts(2);
+    weightIFM = wts(4);
+    title('Scoring','FontSize',16);
+    xlabel('Frame','FontSize',16);
+%     metrics = {'INT', 'IFM SS', 'IFM MS', 'NCC'};
+    metrics = {'INT', 'IFM SS', 'NCC'};
+    ylabel(strjoin(metrics,', '),'FontName','Arial','FontSize',16);
+    hold on
+    xlim([min(frames),max(frames)])
+    ylim([0,max(data.finalScores)+.1]);
+    
+    %% INT
+    intData = zeros(2*nFrames,1);
+    intData(snrf) = data.scores.int(I).*weightINT;
+    scoreSoFar = intData(snrf);
+    patch(frames, intData, 'g','EdgeColor','none');
+    %% IFM SUMSLOPES
+    sumSlopesData = zeros(2*nFrames,1);
+    sumSlopesData(snrf) = data.scores.sumSlopes(I).*(weightIFM) + scoreSoFar;
+    scoreSoFar = sumSlopesData(snrf);
+    sumSlopesData(nFrames+1:end) = flip(intData(1:nFrames));
+    patch(frames, sumSlopesData, 'm','EdgeColor','none');
+    %% IFM MAXSLOPES
+%     maxSlopesData = zeros(2*nFrames,1);
+%     maxSlopesData(snrf) = data.scores.maxSlopes(I).*(weightIFM/2) + scoreSoFar;
+%     scoreSoFar = maxSlopesData(snrf);
+%     maxSlopesData(nFrames+1:end) = flip(sumSlopesData(1:nFrames));
+%     patch(frames, maxSlopesData, 'c','EdgeColor','none');
+    %% NCC
+    nccData = zeros(2*nFrames,1);
+    nccData(snrf) = data.scores.ncc(I).*(weightNCC) + scoreSoFar;
+    nccData(nFrames+1:end) = flip(sumSlopesData(1:nFrames));
+    patch(frames, nccData, 'b','EdgeColor','none');
+    
+    %% Highlight top frames
+    t=0:(2*pi)/50:2*pi;
+    for i=1:10
+        patch(cos(t)+data.frames(i), (0.01*sin(t))+data.finalScores(i), 'r',...
+            'FaceColor','none','EdgeColor','r');
+    end
+    hold off
+    
+else
+    subplot(2,2,1);
+    %     hold on
+    [f,I] = sort(data.frames);
+    plot3(data.xDeg(I), data.yDeg(I),f);
+    view([0 90]);
+    %     [~, I] = sort(data.frames);
+    %     colorCol = 0:1/nrf:0.999;
+    %     colors = horzcat(colorCol', colorCol', colorCol');
+    %     xData = data.xDeg(I);
+    %     yData = data.yDeg(I);
+    %     for i=1:nrf-1
+    %         plot3(xData(i:i+1), yData(i:i+1), frames(i:i+1), 'Color', colors(i,:));
+    %     end
+    title('Eye Trace','FontSize',16);
+    xlabel('X (degrees)','FontSize',16);
+    ylabel('Y (degrees)','FontSize',16);
+    %     scatter(data.centroids(:,1),data.centroids(:,2),1000,'black','x');
+    %     hold off
+    
+    subplot(2,2,2);
+    % Make a ploygon out of the data
+    % frames: x values of polygon
+    nFrames = length(images);
+    f = (1:nFrames)';
+    [snrf,I] = sort(data.frames);
+    frames = zeros(2*nFrames,1);
+    frames(1:nFrames)     = f;       % roof of data
+    frames(nFrames+1:end) = flip(f); % floor of data
+    weightINT = wts(1);
+    weightNCC = wts(2);
+    weightP2C = wts(3);
+    weightIFM = wts(4);
+    title('Scoring','FontSize',16);
+    xlabel('Frame','FontSize',16);
+%     metrics = {'NCC', 'INT', 'IFM SS', 'IFM MS', 'P2C'};
+    metrics = {'NCC', 'INT', 'IFM SS', 'P2C'};
+    ylabel(strjoin(metrics,', '),'FontName','Arial','FontSize',16);
+    hold on
+    xlim([min(frames),max(frames)])
+    ylim([0,max(data.finalScores)+.1]);
+    %% NCC
+    nccData = zeros(2*nFrames,1);
+    nccData(snrf) = data.scores.ncc(I).*weightNCC;
+    scoreSoFar = nccData(snrf);
+    patch(frames, nccData, 'blue','EdgeColor','none');
+    %% INT
+    intData = zeros(2*nFrames,1);
+    intData(snrf) = data.scores.int(I).*weightINT + scoreSoFar;
+    scoreSoFar = intData(snrf);
+    intData(nFrames+1:end) = flip(nccData(1:nFrames));
+    patch(frames, intData, 'green','EdgeColor','none');
+    %% IFM SUMSLOPES
+    sumSlopesData = zeros(2*nFrames,1);
+    sumSlopesData(snrf) = data.scores.sumSlopes(I).*(weightIFM) + scoreSoFar;
+    scoreSoFar = sumSlopesData(snrf);
+    sumSlopesData(nFrames+1:end) = flip(intData(1:nFrames));
+    patch(frames, sumSlopesData, 'm','EdgeColor','none');
+    %% IFM MAXSLOPES
+%     maxSlopesData = zeros(2*nFrames,1);
+%     maxSlopesData(snrf) = data.scores.maxSlopes(I).*(weightIFM/2) + scoreSoFar;
+%     scoreSoFar = maxSlopesData(snrf);
+%     maxSlopesData(nFrames+1:end) = flip(sumSlopesData(1:nFrames));
+%     patch(frames, maxSlopesData, 'c','EdgeColor','none');
+    %% P2C
+    p2cData = zeros(2*nFrames,1);
+    p2cData(snrf) = data.scores.p2c(I).*weightP2C + scoreSoFar;
+    p2cData(nFrames+1:end) = flip(sumSlopesData(1:nFrames));
+    patch(frames, p2cData, 'k','EdgeColor','none');
+    % Highlight top frames
+    t=0:(2*pi)/50:2*pi;
+    for i=1:10
+        patch(cos(t)+data.frames(i), (0.01*sin(t))+data.finalScores(i), 'r',...
+            'FaceColor','none','EdgeColor','r');
+    end
+    hold off
+    
+    %% Frame Scatter
+    subplot(2,2,3);
+    frameScatter([data.x,data.y], dim, data.clusters.assign);
+    
+%     colors = [
+%         1.000, 0.000, 0.000;
+%         0.000, 1.000, 0.000;
+%         0.000, 0.000, 1.000;
+%         0.000, 0.000, 0.000;
+%         0.486, 0.988, 0.000;
+%         0.000, 0.980, 0.604;
+%         0.000, 1.000, 1.000;
+%         0.000, 0.749, 1.000;
+%         0.098, 0.098, 0.439;
+%         0.580, 0.000, 0.827;
+%         0.545, 0.271, 0.075;
+%         0.502, 0.000, 0.000;
+%         0.643, 0.165, 0.165;
+%         ];
+%     while length(colors(:,1)) < length(data.clusters.names)
+%         colors(end+1,:) = rand(1,3); %#ok<AGROW>
+%     end
+%     sz = (max(data.xDeg)-min(data.xDeg))/100;
+%     hold on
+%     for i=1:nrf
+%         
+%         patch((sz.*cos(t))+data.xDeg(i), ((2*sz).*sin(t))+data.yDeg(i), 'r',...
+%             'FaceColor','none','EdgeColor',colors(data.clusters.assign(i),:));
+%         %     scatter(data.xDeg(i),data.yDeg(i),[],data.clusters.assign(i), ...
+%         %         'Marker', ctype{data.clusters.assign(i)});
+%     end
+%     title('Clusters','FontSize',16);
+%     xlabel('X (degrees)','FontSize',16);
+%     ylabel('Y (degrees)','FontSize',16);
+%     hold off
+    
+end
+
+%% BEST REF FRAME
+subplot(224);
+img = images{data.frames(1)};
+imshow(img);
+title(['Predicted Best Frame: ', num2str(data.frames(1))]);
+
+    
+% Attempt to register frames
+%     reg = data;
+%     % Get new positions
+%     reg.rx = reg.x.*-1;
+%     reg.ry = reg.y.*-1;
+%     % Get shift
+%     minx = min(reg.rx);
+%     miny = min(reg.ry);
+%     reg.rx = reg.rx + abs(minx) + 1;
+%     reg.ry = reg.ry + abs(miny) + 1;
+%     % Get bounds
+%     maxx = max(reg.rx);
+%     maxy = max(reg.ry);
+%     bght = maxy + dim(1) + 1;
+%     bgwd = maxx + dim(2) + 1;
+%     bg = zeros(bght,bgwd);
+%     % Setup movie
+%     outVidName = strcat('registered_', name);
+%     writerObj = VideoWriter(outVidName);
+%     open(writerObj);
+%     for i=1:nrf
+%         regFrame = bg;
+%         ry = reg.ry(i):reg.ry(i)+dim(1)-1;
+%         rx = reg.rx(i):reg.rx(i)+dim(2)-1;
+%         regFrame(ry,rx) = images{reg.frames(i)};
+%         writeVideo(writerObj,regFrame);
+%     end
+%     close(writerObj);
+
+
+
+
+
+end
+
