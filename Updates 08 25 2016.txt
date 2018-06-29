@@ -1,0 +1,36 @@
+=======================
+ARFS updated 2016.08.25
+=======================
+
+1.) Changed the window for setting ARFS parameters to a guided user-
+	interface (GUI) for less ambiguous parameter adjusting. Should
+	have same utitlity as before.
+2.) Changed waitbar to display current video / total number of videos
+	as a fraction rather than a percentage.
+3.) Fixed a bug in the new GUI which led to the error:
+	Undefined function 'my_first_radio_button_pair' for input
+	arguments of type
+'matlab.ui.control.UIControl'.
+	
+
+Error in@(hObject,eventdata)my_first_radio_button_pair
+	('mfpcValue_CreateFcn',hObject,eventdata,guidata(hObject))
+
+	problem resulted from a file name change without updating
+	all callbacks to this new file name.
+4.) Fixed a bug that threw an error if multiple desinusoid files were
+	used without their associated videos.
+
+
+==============
+Future Updates
+==============
+
+1.) Graphical user-interface (GUI) for easy selection of videos and
+	parameters
+2.) Elimination of need to manually process any videos
+3.) Elimination of need to drag .dmb's into registration software at
+	end
+4.) Feedback system to automatically determine success of registration
+	and correction if errors occur
+5.) Pipeline into automatic montaging
